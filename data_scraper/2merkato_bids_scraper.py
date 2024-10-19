@@ -4,20 +4,74 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import time
 from dotenv import load_dotenv
+import psycopg2  # Import psycopg2 for PostgreSQL
+from psycopg2 import OperationalError
+import json
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Database connection details from environment variables
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
 
 # URLs for login and tenders page
 LOGIN_URL = "https://tender.2merkato.com/login"
 TENDERS_URL = "https://tender.2merkato.com/tenders/"
 
-# Fetch credentials from environment variables
+# Fetch credentials from environment variables for the login
 username = os.getenv("2MERKATO_USERNAME")
 password = os.getenv("2MERKATO_PASSWORD")
 
 # Create a session to persist cookies
 session = requests.Session()
+
+def create_db_connection():
+    """Create and return a database connection."""
+    try:
+        connection = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD
+        )
+        return connection
+    except OperationalError as e:
+        print(f"Operational error: {e}")
+        return None
+    except Exception as e:
+        print(f"Error connecting to database: {e}")
+        return None
+
+def insert_tender_data(title, core_details, other_data):
+    """Insert scraped tender data into the PostgreSQL database."""
+    connection = create_db_connection()
+    if connection is None:
+        print("Failed to connect to the database. Exiting.")
+        return  # Exit the function if the connection fails
+
+    try:
+        cursor = connection.cursor()
+
+        # Convert dictionaries to JSON strings
+        core_details_json = json.dumps(core_details)
+        other_data_json = json.dumps(other_data)
+
+        # Insert data into the tmerkato_tenders table
+        cursor.execute("""
+            INSERT INTO tmerkato_tenders (title, core_details, other_data)
+            VALUES (%s, %s, %s)
+        """, (title, core_details_json, other_data_json))  # Use the JSON strings here
+
+        connection.commit()  # Commit the changes
+        print("Data inserted successfully.")
+    except Exception as e:
+        print(f"Error inserting data into database: {e}")
+    finally:
+        cursor.close()
+        connection.close()
 
 def get_csrf_token():
     """Fetch the CSRF token from the login page."""
@@ -76,21 +130,21 @@ def scrape_tender_details(tender_url):
 
     if response.status_code == 200:
         soup = BeautifulSoup(response.content, 'html.parser')
-        
+
         # Scrape the title
         title_tag = soup.find('title')
         title = title_tag.text.strip() if title_tag else "No title found"
-        
+
         # Separate core details and other data
         core_details = {}
         other_data = {}
-        
+
         # Scrape the details section
         detail_sections = soup.find_all('div', class_='tender-detail-outer')
         for section in detail_sections:
             label = section.find('div', class_='tender-detail-label').text.strip()
             value_tag = section.find('div', class_='tender-detail-value')
-            
+
             value = value_tag.text.strip() if value_tag else "No value"
 
             if 'Region' in label and value_tag.find('a'):
@@ -98,11 +152,11 @@ def scrape_tender_details(tender_url):
 
             # Store the value in core_details
             core_details[label] = value
-        
+
         # Scrape the "Posted" date
         posted_tag = soup.find('div', class_='post-date tender-detail-value')
         core_details["Posted"] = posted_tag.text.strip() if posted_tag else "No value"
-        
+
         # Scrape paragraph content, excluding those inside tables
         paragraphs = []
         for p in soup.find_all('p'):
@@ -110,7 +164,7 @@ def scrape_tender_details(tender_url):
                 paragraphs.append(p.text.strip())
 
         other_data['paragraphs'] = paragraphs
-        
+
         # Scrape tables
         tables = soup.find_all('table')
         table_data = []
@@ -127,7 +181,7 @@ def scrape_tender_details(tender_url):
             if not headers and rows:
                 headers = rows[0]  # Use the first row as headers
                 rows = rows[1:]  # Remove the first row from the data rows
-            
+
             table_data.append({'headers': headers, 'rows': rows})
 
         other_data['tables'] = table_data  # Ensure to save the table data in other_data
@@ -137,7 +191,6 @@ def scrape_tender_details(tender_url):
         print(f"Failed to retrieve tender {tender_url} with status code: {response.status_code}")
         return None, {}, {}
 
-# Attempt to log in
 if login(username, password):
     # If login is successful, scrape all tender links
     tender_links = scrape_tender_links()
@@ -152,7 +205,7 @@ if login(username, password):
             if title:
                 print(f"\nURL: {tender_url}")
                 print(f"Title: {title}")
-                
+
                 # Print core details
                 print("\nCore Details:")
                 for label, value in core_details.items():
@@ -160,22 +213,11 @@ if login(username, password):
 
                 # Print the other data (paragraphs, tables, etc.)
                 print("\nOther Data:")
-
-                # Print paragraphs
                 for paragraph in other_data.get('paragraphs', []):
                     print(paragraph)
 
-                # Print tables
-                # Print tables
-                for i, table in enumerate(other_data.get('tables', [])):
-                    # Check if the table has data before printing
-                    if table['rows']:
-                        print(f"\nTable {i + 1}:")
-                        print("Headers:", table['headers'])
-                        for row in table['rows']:
-                            print("Row:", row)
-                    else:
-                        print(f"\nTable {i + 1} has no data.")
+                # Insert the data into PostgreSQL
+                insert_tender_data(title, core_details, other_data)
 
             # Add delay to avoid overloading the server
             time.sleep(1)
