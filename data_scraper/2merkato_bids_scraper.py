@@ -90,18 +90,34 @@ def scrape_tender_details(tender_url):
         
         # Scrape additional details like bid dates, region, and more
         details = {}
+        
+        # Loop through all tender detail sections
         detail_sections = soup.find_all('div', class_='tender-detail-outer')
 
         for section in detail_sections:
             label = section.find('div', class_='tender-detail-label').text.strip()
             value_tag = section.find('div', class_='tender-detail-value')
-            value = value_tag.text.strip() if value_tag else "No value"
-            
-            # For 'Region', extract the actual link text
+
+            # Handle cases where value_tag may not exist
+            if value_tag:
+                value = value_tag.text.strip()
+            else:
+                # If the value is empty or doesn't exist
+                value = "No value"
+
+            # Special case for "Region" - grab the link text inside if it exists
             if 'Region' in label and value_tag and value_tag.find('a'):
                 value = value_tag.find('a').text.strip()
 
+            # Add to the details dictionary
             details[label] = value
+
+        # Handle the special case for the "Posted" field with a different class
+        posted_tag = soup.find('div', class_='post-date tender-detail-value')
+        if posted_tag:
+            details["Posted"] = posted_tag.text.strip()
+        else:
+            details["Posted"] = "No value"
         
         return title, details
     else:
