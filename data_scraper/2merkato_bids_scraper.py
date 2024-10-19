@@ -77,18 +77,36 @@ def scrape_tender_links():
         print(f"Failed to retrieve tenders page with status code: {response.status_code}")
         return []
 
-def scrape_tender_title(tender_url):
-    """Scrape the title of a specific tender page."""
+def scrape_tender_details(tender_url):
+    """Scrape the title and details of a specific tender page."""
     response = session.get(tender_url)
 
     if response.status_code == 200:
         soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Scrape the title
         title_tag = soup.find('title')
         title = title_tag.text.strip() if title_tag else "No title found"
-        return title
+        
+        # Scrape additional details like bid dates, region, and more
+        details = {}
+        detail_sections = soup.find_all('div', class_='tender-detail-outer')
+
+        for section in detail_sections:
+            label = section.find('div', class_='tender-detail-label').text.strip()
+            value_tag = section.find('div', class_='tender-detail-value')
+            value = value_tag.text.strip() if value_tag else "No value"
+            
+            # For 'Region', extract the actual link text
+            if 'Region' in label and value_tag and value_tag.find('a'):
+                value = value_tag.find('a').text.strip()
+
+            details[label] = value
+        
+        return title, details
     else:
         print(f"Failed to retrieve tender {tender_url} with status code: {response.status_code}")
-        return None
+        return None, {}
 
 # Attempt to log in
 if login(username, password):
@@ -96,14 +114,17 @@ if login(username, password):
     tender_links = scrape_tender_links()
 
     if tender_links:
-        print(f"Found {len(tender_links)} tender links. Scraping titles...")
+        print(f"Found {len(tender_links)} tender links. Scraping details...")
 
-        # Scrape the title for each tender link
+        # Scrape the title and details for each tender link
         for tender_url in tender_links:
-            title = scrape_tender_title(tender_url)
+            title, details = scrape_tender_details(tender_url)
             if title:
                 print(f"URL: {tender_url}")
                 print(f"Title: {title}")
+                print("Details:")
+                for label, value in details.items():
+                    print(f"  {label}: {value}")
             time.sleep(1)  # Add delay to avoid overloading the server
     else:
         print("No tender links found.")
