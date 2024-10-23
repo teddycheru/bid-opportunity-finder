@@ -17,15 +17,15 @@ DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 
-# URLs for login and tenders page
-LOGIN_URL = "https://tender.2merkato.com/login"
-TENDERS_URL = "https://tender.2merkato.com/tenders/"
-
-# Fetch credentials from environment variables for the login
+# 2Merkato login details
 username = os.getenv("2MERKATO_USERNAME")
 password = os.getenv("2MERKATO_PASSWORD")
 
-# Create a session to persist cookies
+# URLs for login and tenders page (without the page number)
+BASE_TENDERS_URL = "https://tender.2merkato.com/tenders?q=&bidding=&endDate=&category[]=61bbe243cfb36d443e895a5f,61bbe243cfb36d443e895a24,61bbe243cfb36d443e895a25,61bbe243cfb36d443e895a9b,61bbe243cfb36d443e895a94,61bbe243cfb36d443e8959ed,61bbe243cfb36d443e8959f6,61bbe243cfb36d443e8959f7,61bbe243cfb36d443e895a26,61bbe243cfb36d443e895a27,61bbe243cfb36d443e895a40,61bbe243cfb36d443e895a45,&action=&language=61bbe23bcfb36d443e8959e5&tenderSource=&region=&startDate="
+
+LOGIN_URL = "https://tender.2merkato.com/login"
+
 session = requests.Session()
 
 def create_db_connection():
@@ -50,22 +50,20 @@ def insert_tender_data(title, core_details, other_data):
     connection = create_db_connection()
     if connection is None:
         print("Failed to connect to the database. Exiting.")
-        return  # Exit the function if the connection fails
+        return
 
     try:
         cursor = connection.cursor()
 
-        # Convert dictionaries to JSON strings
         core_details_json = json.dumps(core_details)
         other_data_json = json.dumps(other_data)
 
-        # Insert data into the tmerkato_tenders table
         cursor.execute("""
             INSERT INTO tmerkato_tenders (title, core_details, other_data)
             VALUES (%s, %s, %s)
-        """, (title, core_details_json, other_data_json))  # Use the JSON strings here
+        """, (title, core_details_json, other_data_json))
 
-        connection.commit()  # Commit the changes
+        connection.commit()
         print("Data inserted successfully.")
     except Exception as e:
         print(f"Error inserting data into database: {e}")
@@ -77,8 +75,6 @@ def get_csrf_token():
     """Fetch the CSRF token from the login page."""
     login_page = session.get(LOGIN_URL)
     soup = BeautifulSoup(login_page.content, 'html.parser')
-    
-    # Find the hidden CSRF token
     csrf_token = soup.find('input', {'name': '_csrf'})['value']
     return csrf_token
 
@@ -86,15 +82,13 @@ def login(username, password):
     """Attempt to log in with the provided credentials."""
     csrf_token = get_csrf_token()
 
-    # Prepare the login payload with CSRF token and credentials
     payload = {
-        'emailOrMobile': username,   # Field for username
-        'password': password,        # Field for password
-        '_csrf': csrf_token,         # CSRF token
-        'captcha': ''                # Placeholder for captcha
+        'emailOrMobile': username,
+        'password': password,
+        '_csrf': csrf_token,
+        'captcha': ''
     }
 
-    # Send the POST request to login
     login_response = session.post(LOGIN_URL, data=payload)
 
     if login_response.status_code == 200:
@@ -109,19 +103,28 @@ def login(username, password):
         print(f"Login request failed with status code: {login_response.status_code}")
         return False
 
-def scrape_tender_links():
-    """Scrape the tender page and collect all valid tender links."""
-    response = session.get(TENDERS_URL)
+def scrape_tender_links(page_number):
+    """Scrape the tender page and collect all valid tender links for the given page."""
+    url = f"{BASE_TENDERS_URL}&page={page_number}"
+    response = session.get(url)
 
     if response.status_code == 200:
         soup = BeautifulSoup(response.content, 'html.parser')
         links = soup.find_all('a', href=True)
 
-        tender_links = [link['href'] for link in links if link['href'].startswith("/tenders/")]
-        tender_links = [f"https://tender.2merkato.com{link}" for link in tender_links]
+        tender_links = []
+        for link in links:
+            href = link['href']
+            full_url = f"https://tender.2merkato.com{href}" if href.startswith("/tenders/") else href
+
+            if full_url.startswith("https://tender.2merkato.com/tenders/") and \
+               not any(excluded in full_url for excluded in ["/free", "/addisland", "/home", "?action=&page="]) and \
+               len(full_url.split("/tenders/")[1]) > 0:
+                tender_links.append(full_url)
+
         return tender_links
     else:
-        print(f"Failed to retrieve tenders page with status code: {response.status_code}")
+        print(f"Failed to retrieve tenders page {page_number} with status code: {response.status_code}")
         return []
 
 def scrape_tender_details(tender_url):
@@ -131,60 +134,57 @@ def scrape_tender_details(tender_url):
     if response.status_code == 200:
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # Scrape the title
         title_tag = soup.find('title')
         title = title_tag.text.strip() if title_tag else "No title found"
 
-        # Separate core details and other data
         core_details = {}
         other_data = {}
 
-        # Scrape the details section
         detail_sections = soup.find_all('div', class_='tender-detail-outer')
         for section in detail_sections:
             label = section.find('div', class_='tender-detail-label').text.strip()
             value_tag = section.find('div', class_='tender-detail-value')
-
+            
             value = value_tag.text.strip() if value_tag else "No value"
-
             if 'Region' in label and value_tag.find('a'):
                 value = value_tag.find('a').text.strip()
 
-            # Store the value in core_details
             core_details[label] = value
 
-        # Scrape the "Posted" date
         posted_tag = soup.find('div', class_='post-date tender-detail-value')
         core_details["Posted"] = posted_tag.text.strip() if posted_tag else "No value"
 
-        # Scrape paragraph content, excluding those inside tables
+        tor_section = soup.find('a', class_='btn btn-sm btn-success')
+        if tor_section and 'href' in tor_section.attrs:
+            tor_link = f"https://tender.2merkato.com{tor_section['href']}"
+            core_details["TOR"] = tor_link
+        else:
+            core_details["TOR"] = "Not attached"
+
         paragraphs = []
         for p in soup.find_all('p'):
-            if not p.find_parent('table'):  # Check if the parent is not a table
+            if not p.find_parent('table'):
                 paragraphs.append(p.text.strip())
 
         other_data['paragraphs'] = paragraphs
 
-        # Scrape tables
         tables = soup.find_all('table')
         table_data = []
         for table in tables:
-            # Extract table headers and rows
             headers = [th.text.strip() for th in table.find_all('th')]
             rows = []
             for row in table.find_all('tr'):
                 cols = [td.text.strip() for td in row.find_all('td')]
-                if cols:  # Only add rows that have data
+                if cols:
                     rows.append(cols)
 
-            # If no headers found, use the first row as headers
             if not headers and rows:
-                headers = rows[0]  # Use the first row as headers
-                rows = rows[1:]  # Remove the first row from the data rows
+                headers = rows[0]
+                rows = rows[1:]
 
             table_data.append({'headers': headers, 'rows': rows})
 
-        other_data['tables'] = table_data  # Ensure to save the table data in other_data
+        other_data['tables'] = table_data
 
         return title, core_details, other_data
     else:
@@ -192,13 +192,15 @@ def scrape_tender_details(tender_url):
         return None, {}, {}
 
 if login(username, password):
-    # If login is successful, scrape all tender links
-    tender_links = scrape_tender_links()
+    page_number = 0
+    while True:
+        print(f"Scraping page {page_number}...")
+        tender_links = scrape_tender_links(page_number)
 
-    if tender_links:
-        print(f"Found {len(tender_links)} tender links. Scraping details...")
+        if not tender_links:
+            print(f"No more tenders found on page {page_number}. Stopping.")
+            break
 
-        # Scrape the details for each tender link
         for tender_url in tender_links:
             title, core_details, other_data = scrape_tender_details(tender_url)
 
@@ -206,22 +208,23 @@ if login(username, password):
                 print(f"\nURL: {tender_url}")
                 print(f"Title: {title}")
 
-                # Print core details
                 print("\nCore Details:")
                 for label, value in core_details.items():
                     print(f"{label}: {value}")
 
-                # Print the other data (paragraphs, tables, etc.)
                 print("\nOther Data:")
                 for paragraph in other_data.get('paragraphs', []):
                     print(paragraph)
 
-                # Insert the data into PostgreSQL
                 insert_tender_data(title, core_details, other_data)
 
-            # Add delay to avoid overloading the server
-            time.sleep(1)
-    else:
-        print("No tender links found.")
+            time.sleep(1)  # Avoid overloading the server
+
+        page_number += 1
 else:
     print("Exiting due to login failure.")
+    
+if __name__ == "__main__":
+    print("Script loaded. Scraping is disabled by default.")
+    # Trigger scraping
+    # scrape_tenders()
