@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  database:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  scraper:
+    build: .
+    depends_on:
+      - database
+    env_file:
+      - .env  # Load environment variables from the .env file
+    volumes:
+      - ./data_scraper:/app  # Map the data_scraper folder to /app inside the container
+    working_dir: /app  # Set the working directory inside the container
+    command: python 2merkato_bids_scraper.py  # Specify the script to run
+
+volumes:
+  pgdata:
+    driver: local
